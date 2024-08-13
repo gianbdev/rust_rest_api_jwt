@@ -1,60 +1,143 @@
-#[macro_use]
-extern crate diesel;
-#[macro_use]
-extern crate diesel_migrations;
-#[macro_use]
-extern crate log;
+#![allow(unused_must_use)]
 
-pub mod config;
-pub mod controllers;
-pub mod handler;
-pub mod jwt;
-pub mod middlewares;
-pub mod models;
-pub mod schema;
+use std::default::Default;
+use std::{env, io};
 
 use actix_cors::Cors;
-use actix_files::Files;
-use actix_web::middleware::Logger;
-use actix_web::{http::header, App, HttpServer};
-use anyhow::Context;
-use config::{db::migrate_and_config_db, routes::config_routes, Config};
-use dotenv::dotenv;
-use env_logger;
-use middlewares::authentication::Authentication;
+use actix_web::dev::Service;
+use actix_web::web;
+use actix_web::{http, App, HttpServer};
+use futures::FutureExt;
+
+mod api;
+mod config;
+mod constants;
+mod error;
+mod middleware;
+mod models;
+mod schema;
+mod services;
+mod utils;
 
 #[actix_rt::main]
-async fn main() -> anyhow::Result<()> {
-    let _path_buffer = dotenv().context("Failed to read the .env file.")?;
-
-    let config = Config::get_from_env().context("Could not get app config from the environment")?;
-    let cloned_config = config.clone();
-
+async fn main() -> io::Result<()> {
+    dotenv::dotenv().expect("Failed to read .env file");
+    env::set_var("RUST_LOG", "actix_web=debug");
     env_logger::init();
 
-    let pool = migrate_and_config_db(&config.database_url)
-        .context("Failed to migrate and configure database")?;
+    let app_host = env::var("APP_HOST").expect("APP_HOST not found.");
+    let app_port = env::var("APP_PORT").expect("APP_PORT not found.");
+    let app_url = format!("{}:{}", &app_host, &app_port);
+    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL not found.");
+
+    let pool = config::db::init_db_pool(&db_url);
+    config::db::run_migration(&mut pool.get().unwrap());
 
     HttpServer::new(move || {
         App::new()
             .wrap(
-                Cors::new()
+                Cors::default() // allowed_origin return access-control-allow-origin: * by default
+                    .allowed_origin("http://127.0.0.1:3000")
+                    .allowed_origin("http://localhost:3000")
                     .send_wildcard()
-                    .allowed_origin(&cloned_config.allowed_origin)
-                    .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
-                    .allowed_methods(&cloned_config.allowed_methods)
-                    .allowed_header(header::CONTENT_TYPE)
-                    .finish(),
+                    .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+                    .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+                    .allowed_header(http::header::CONTENT_TYPE)
+                    .max_age(3600),
             )
-            .data(pool.clone())
-            .wrap(Logger::default())
-            .wrap(Authentication)
-            .configure(config_routes)
-            .service(Files::new("/documentation", "./openapi").index_file("apicontract.json"))
+            .app_data(web::Data::new(pool.clone()))
+            .wrap(actix_web::middleware::Logger::default())
+            .wrap(crate::middleware::auth_middleware::Authentication) // Comment this line if you want to integrate with yew-address-book-frontend
+            .wrap_fn(|req, srv| srv.call(req).map(|res| res))
+            .configure(config::app::config_services)
     })
-    .bind(&config.bind_url)?
+    .bind(&app_url)?
     .run()
-    .await?;
+    .await
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use actix_cors::Cors;
+    use actix_web::dev::Service;
+    use actix_web::web;
+    use actix_web::{http, App, HttpServer};
+    use futures::FutureExt;
+    use testcontainers::clients;
+    use testcontainers::images::postgres::Postgres;
+
+    use crate::config;
+
+    #[actix_web::test]
+    async fn test_startup_ok() {
+        let docker = clients::Cli::default();
+        let postgres = docker.run(Postgres::default());
+        let pool = config::db::init_db_pool(
+            format!(
+                "postgres://postgres:postgres@127.0.0.1:{}/postgres",
+                postgres.get_host_port_ipv4(5432)
+            )
+            .as_str(),
+        );
+        config::db::run_migration(&mut pool.get().unwrap());
+
+        HttpServer::new(move || {
+            App::new()
+                .wrap(
+                    Cors::default() // allowed_origin return access-control-allow-origin: * by default
+                        // .allowed_origin("http://127.0.0.1:8080")
+                        .send_wildcard()
+                        .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+                        .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+                        .allowed_header(http::header::CONTENT_TYPE)
+                        .max_age(3600),
+                )
+                .app_data(web::Data::new(pool.clone()))
+                .wrap(actix_web::middleware::Logger::default())
+                .wrap(crate::middleware::auth_middleware::Authentication)
+                .wrap_fn(|req, srv| srv.call(req).map(|res| res))
+                .configure(config::app::config_services)
+        })
+        .bind("localhost:8000".to_string())
+        .unwrap()
+        .run();
+
+        assert_eq!(true, true);
+    }
+
+    #[actix_web::test]
+    async fn test_startup_without_auth_middleware_ok() {
+        let docker = clients::Cli::default();
+        let postgres = docker.run(Postgres::default());
+        let pool = config::db::init_db_pool(
+            format!(
+                "postgres://postgres:postgres@127.0.0.1:{}/postgres",
+                postgres.get_host_port_ipv4(5432)
+            )
+            .as_str(),
+        );
+        config::db::run_migration(&mut pool.get().unwrap());
+
+        HttpServer::new(move || {
+            App::new()
+                .wrap(
+                    Cors::default() // allowed_origin return access-control-allow-origin: * by default
+                        // .allowed_origin("http://127.0.0.1:8080")
+                        .send_wildcard()
+                        .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+                        .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+                        .allowed_header(http::header::CONTENT_TYPE)
+                        .max_age(3600),
+                )
+                .app_data(web::Data::new(pool.clone()))
+                .wrap(actix_web::middleware::Logger::default())
+                .wrap_fn(|req, srv| srv.call(req).map(|res| res))
+                .configure(config::app::config_services)
+        })
+        .bind("localhost:8001".to_string())
+        .unwrap()
+        .run();
+
+        assert_eq!(true, true);
+    }
 }

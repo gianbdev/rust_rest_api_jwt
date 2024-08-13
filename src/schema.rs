@@ -1,21 +1,36 @@
-table! {
-    persons (id) {
+// @generated automatically by Diesel CLI.
+
+diesel::table! {
+    login_history (id) {
         id -> Int4,
-        name -> Varchar,
-        birthdate -> Int8,
         user_id -> Int4,
+        login_timestamp -> Timestamptz,
     }
 }
 
-table! {
+diesel::table! {
+    people (id) {
+        id -> Int4,
+        name -> Varchar,
+        gender -> Bool,
+        age -> Int4,
+        address -> Varchar,
+        #[max_length = 11]
+        phone -> Varchar,
+        email -> Varchar,
+    }
+}
+
+diesel::table! {
     users (id) {
         id -> Int4,
-        name -> Varchar,
         username -> Varchar,
+        email -> Varchar,
         password -> Varchar,
+        login_session -> Varchar,
     }
 }
 
-joinable!(persons -> users (user_id));
+diesel::joinable!(login_history -> users (user_id));
 
-allow_tables_to_appear_in_same_query!(persons, users,);
+diesel::allow_tables_to_appear_in_same_query!(login_history, people, users,);

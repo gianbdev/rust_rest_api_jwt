@@ -1,2 +1,4 @@
 /target
 .env
+secret.key
+generate_secret_key.rs

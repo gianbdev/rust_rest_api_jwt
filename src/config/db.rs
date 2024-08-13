@@ -1,25 +1,29 @@
-use anyhow::Context;
+#[allow(unused_imports)]
 use diesel::{
     pg::PgConnection,
     r2d2::{self, ConnectionManager},
+    sql_query,
 };
-use diesel_migrations::embed_migrations;
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
-embed_migrations!();
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
-pub type DbConnection = PgConnection;
-pub type Pool = r2d2::Pool<ConnectionManager<DbConnection>>;
+pub type Connection = PgConnection;
 
-pub fn migrate_and_config_db(db_url: &str) -> anyhow::Result<Pool> {
-    info!("Migrating and configurating database...");
-    let manager = ConnectionManager::<DbConnection>::new(db_url);
+pub type Pool = r2d2::Pool<ConnectionManager<Connection>>;
+
+pub fn init_db_pool(url: &str) -> Pool {
+    use log::info;
+
+    info!("Migrating and configuring database...");
+    let manager = ConnectionManager::<Connection>::new(url);
     let pool = r2d2::Pool::builder()
         .build(manager)
-        .context("Failed to create pool.")?;
+        .expect("Failed to create pool.");
 
-    let connection = pool.get().context("Failed to migrate.")?;
+    pool
+}
 
-    embedded_migrations::run(&connection).context("The embedded migrations failed")?;
-
-    Ok(pool)
+pub fn run_migration(conn: &mut PgConnection) {
+    conn.run_pending_migrations(MIGRATIONS).unwrap();
 }
